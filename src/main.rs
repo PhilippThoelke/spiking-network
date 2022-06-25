@@ -19,10 +19,6 @@ fn main() {
         positions[i][1] = rng.gen_range(-1f32..1f32);
     }
 
-    positions[0][0] = 100.;
-    positions[1][0] = 100.;
-    positions[2][0] = 100.;
-
     // compute the distance matrix between all pairs of neurons
     let mut distances = [[0f32; NUM_NEURONS]; NUM_NEURONS];
     for i in 0..positions.len() {
