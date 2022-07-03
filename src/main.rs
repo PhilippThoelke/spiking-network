@@ -1,98 +1,49 @@
+use neuron::*;
 use rand::seq::SliceRandom;
 use rand::Rng;
-use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-struct Point {
-    x: f32,
-    y: f32,
-}
+mod neuron;
 
-struct Neuron {
-    index: usize,
-    position: Point,
-    potential: f32,
-    synapses_out: HashMap<usize, f32>,
-    last_update: Option<Instant>,
-}
-
-impl Neuron {
-    fn update(&mut self, decay_rate: f32, recovery_rate: f32, change: Option<f32>) {
-        if let Some(last_update) = self.last_update {
-            let elapsed = last_update.elapsed().as_millis();
-            if self.potential > 0. {
-                self.potential = (self.potential - decay_rate * (elapsed as f32)).max(0.);
-            } else if self.potential < 0. {
-                self.potential = (self.potential + recovery_rate * (elapsed as f32)).min(0.);
-            }
-        }
-
-        self.potential += change.unwrap_or_default();
-        self.last_update = Some(Instant::now());
-    }
-
-    fn receive_ap(&mut self, ap: &ActionPotential, decay_rate: f32, recovery_rate: f32) {
-        self.update(decay_rate, recovery_rate, Some(ap.strength));
-        // TODO: evaluate if a new AP should be fired
-    }
-}
-
-struct ActionPotential {
-    duration: Duration,
-    strength: f32,
-    from: usize,
-    to: usize,
-    start_time: Instant,
-}
-
-impl ActionPotential {
-    fn time_left(&self) -> Option<Duration> {
-        self.duration.checked_sub(self.start_time.elapsed())
-    }
-}
-
-impl Ord for ActionPotential {
-    fn cmp(&self, other: &Self) -> Ordering {
-        other
-            .time_left()
-            .unwrap_or(Duration::ZERO)
-            .cmp(&self.time_left().unwrap_or(Duration::ZERO))
-    }
-}
-
-impl PartialOrd for ActionPotential {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl PartialEq for ActionPotential {
-    fn eq(&self, other: &Self) -> bool {
-        self.duration == other.duration
-    }
-}
-
-impl Eq for ActionPotential {}
+const NUM_NEURONS: usize = 1000;
+const MIN_SYNAPSES_PER_NEURON: usize = 5;
+const MAX_SYNAPSES_PER_NEURON: usize = 9;
+const DECAY_RATE: f32 = 3e-4;
+const RECOVERY_RATE: f32 = 1e-3;
+const UNDERSHOOT_POTENTIAL: f32 = -0.5;
+const AP_THRESHOLD: f32 = 1.1;
+const AP_VELOCITY: f32 = 1e-3;
 
 fn insert_ap(action_potentials: &mut BinaryHeap<ActionPotential>, new_ap: ActionPotential) {
     action_potentials.push(new_ap);
 }
 
-fn main() {
-    const NUM_NEURONS: usize = 100;
-    const MIN_SYNAPSES_PER_NEURON: usize = 1;
-    const MAX_SYNAPSES_PER_NEURON: usize = 5;
-    const DECAY_RATE: f32 = 0.01;
-    const RECOVERY_RATE: f32 = 0.01;
+trait GetAB<T> {
+    fn get_ab_mut(&mut self, a: usize, b: usize) -> (&mut T, &mut T);
+}
 
+impl GetAB<Neuron> for Vec<Neuron> {
+    fn get_ab_mut(&mut self, a: usize, b: usize) -> (&mut Neuron, &mut Neuron) {
+        assert_ne!(a, b);
+        if a < b {
+            let (aslice, bslice) = self.split_at_mut(b);
+            (&mut aslice[a], &mut bslice[0])
+        } else {
+            let (bslice, aslice) = self.split_at_mut(a);
+            (&mut aslice[0], &mut bslice[b])
+        }
+    }
+}
+
+fn main() {
     // initialize random number generator
     let mut rng = rand::thread_rng();
 
     // initialize membrane potentials to 0
-    let mut neurons: Vec<Neuron> = Vec::new();
+    let neurons: Arc<Mutex<Vec<Neuron>>> = Arc::new(Mutex::new(Vec::new()));
     {
         // generate random positions for all neurons on a 2D plane
         let mut positions = [[0f32; 2]; NUM_NEURONS];
@@ -137,14 +88,11 @@ fn main() {
         }
 
         for i in 0..NUM_NEURONS {
-            neurons.push(Neuron {
+            neurons.lock().unwrap().push(Neuron {
                 index: i,
                 potential: 0.,
                 last_update: None,
-                position: Point {
-                    x: positions[i][0],
-                    y: positions[i][1],
-                },
+                position: Vector2::new(positions[i][0], positions[i][1]),
                 synapses_out: edges.remove(0),
             });
         }
@@ -156,7 +104,12 @@ fn main() {
         mpsc::Receiver<ActionPotential>,
     ) = mpsc::channel();
 
-    let handle = thread::spawn(move || {
+    // clone fields required in and outside of the action potential thread
+    let external_neurons = Arc::clone(&neurons);
+    let external_ap_tx = ap_tx.clone();
+
+    // start thread handling action potentials
+    thread::spawn(move || {
         // create a list of action potentials, sorted by duration
         let mut action_potentials: BinaryHeap<ActionPotential> = BinaryHeap::new();
         loop {
@@ -176,8 +129,14 @@ fn main() {
             }
             // action potential reached the synapse
             let curr_ap = action_potentials.pop().unwrap();
-            // TODO: potentially generate some new action potentials
-            neurons[curr_ap.to].receive_ap(&curr_ap, DECAY_RATE, RECOVERY_RATE);
+            {
+                let mut lock = neurons.lock().unwrap();
+                let (_from, to) = lock.get_ab_mut(curr_ap.from, curr_ap.to);
+                if to.receive_ap(&curr_ap) {
+                    Neuron::fire(curr_ap.to, lock, &ap_tx);
+                    // TODO: update synapse weights in _from
+                }
+            }
             println!(
                 "handled an action potential from {} to {} (number of remaining APs: {})",
                 curr_ap.from,
@@ -187,33 +146,14 @@ fn main() {
         }
     });
 
-    // send some example action potentials for testing
-    let ap = ActionPotential {
-        from: 0,
-        to: 0,
-        strength: 1., // TODO: take this from Neuron.synapses_out[i]
-        duration: Duration::from_millis(1000),
-        start_time: Instant::now(),
-    };
-    ap_tx.send(ap).unwrap();
-
-    let ap = ActionPotential {
-        from: 3,
-        to: 2,
-        strength: 1., // TODO: take this from Neuron.synapses_out[i]
-        duration: Duration::from_millis(1500),
-        start_time: Instant::now(),
-    };
-    ap_tx.send(ap).unwrap();
-
-    let ap = ActionPotential {
-        from: 7,
-        to: 5,
-        strength: 1., // TODO: take this from Neuron.synapses_out[i]
-        duration: Duration::from_millis(750),
-        start_time: Instant::now(),
-    };
-    ap_tx.send(ap).unwrap();
-
-    handle.join().unwrap();
+    loop {
+        // create action potentials in regular intervals
+        {
+            let lock = external_neurons.lock().unwrap();
+            external_ap_tx
+                .send(ActionPotential::new(&lock[0], &lock[1], 1.0))
+                .unwrap();
+        }
+        thread::sleep(Duration::from_secs(1));
+    }
 }
