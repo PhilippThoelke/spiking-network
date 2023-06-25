@@ -1,7 +1,7 @@
 use crate::neuron::{Neuron, NeuronState};
 use rand::Rng;
 use rand_distr::{Distribution, WeightedIndex};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, Receiver};
 
 pub struct Network {
@@ -49,7 +49,16 @@ impl Network {
 
         // initialize neurons and connections between neurons
         let mut neurons: Vec<Neuron> = Vec::new();
-        for (neuron_idx, dendrite_handle) in dendrites.into_iter().enumerate() {
+        let mut axon_handles: Vec<Vec<mpsc::Sender<usize>>> = Vec::new();
+        let mut axon_durations: Vec<Vec<std::time::Duration>> = Vec::new();
+
+        // initialize all dendrite maps
+        let mut dendrite_weights: Vec<HashMap<usize, f32>> = Vec::new();
+        for _ in 0..crate::NUM_NEURONS {
+            dendrite_weights.push(HashMap::new());
+        }
+
+        for neuron_idx in 0..crate::NUM_NEURONS {
             // map neuron distances to probability distribution
             let weights = distances[neuron_idx]
                 .iter()
@@ -72,11 +81,6 @@ impl Network {
                     if target_idxs.len() == 0 {
                         panic!("No connections generated for {}", neuron_idx);
                     }
-                    println!(
-                        "Only generated {} connections for neuron {}",
-                        target_idxs.len(),
-                        neuron_idx
-                    );
                     break;
                 }
 
@@ -92,31 +96,36 @@ impl Network {
             }
 
             // initialize axon and dendrite containers
-            let mut axon_handles: Vec<mpsc::Sender<usize>> = Vec::new();
-            let mut axon_durations: Vec<std::time::Duration> = Vec::new();
-            let mut dendrite_weights: Vec<f32> = Vec::new();
+            axon_handles.push(Vec::new());
+            axon_durations.push(Vec::new());
 
             for target_idx in target_idxs.into_iter() {
-                axon_handles.push(axons[target_idx].clone());
-                axon_durations.push(std::time::Duration::from_millis(
+                axon_handles[neuron_idx].push(axons[target_idx].clone());
+                axon_durations[neuron_idx].push(std::time::Duration::from_millis(
                     (distances[neuron_idx][target_idx] * 1000.0 / crate::ACTION_POTENTIAL_SPEED)
                         as u64,
                 ));
 
                 // generate random weight for the connection
-                dendrite_weights
-                    .push(rng.gen_range(crate::MIN_WEIGHT_INIT..crate::MAX_WEIGHT_INIT));
+                dendrite_weights[target_idx].insert(
+                    neuron_idx,
+                    rng.gen_range(crate::MIN_WEIGHT_INIT..crate::MAX_WEIGHT_INIT),
+                );
             }
 
             // create neuron
-            neurons.push(Neuron::new(
-                neuron_idx,
+            neurons.push(Neuron::new(neuron_idx));
+        }
+
+        // start neurons
+        for (neuron_idx, dendrite_handle) in dendrites.into_iter().enumerate() {
+            neurons[neuron_idx].start(
                 (axons[neuron_idx].clone(), dendrite_handle),
-                dendrite_weights,
-                axon_handles,
-                axon_durations,
+                dendrite_weights[neuron_idx].clone(),
+                axon_handles[neuron_idx].clone(),
+                axon_durations[neuron_idx].clone(),
                 system_sender.clone(),
-            ));
+            )
         }
 
         Network {
