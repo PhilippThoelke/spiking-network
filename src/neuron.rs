@@ -4,13 +4,13 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-pub fn update_neuron(state: &mut NeuronState, incoming: Option<f32>) {
+pub fn update_neuron(state: &mut NeuronState, incoming: Option<f32>) -> bool {
     let now = Instant::now();
     let time_delta = now - state.last_update;
 
     if state.firing && time_delta < crate::HARD_REFRACTORY_DURATION {
-        // hard refractory period
-        return;
+        // hard refractory period, return false to indicate that the neuron can't fire again
+        return false;
     } else {
         // reset firing state
         state.firing = false;
@@ -40,6 +40,8 @@ pub fn update_neuron(state: &mut NeuronState, incoming: Option<f32>) {
             state.membrane_potential = crate::REFRACTORY_POTENTIAL;
         }
     }
+    // return true to indicate that the neuron is ready to fire
+    return true;
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone)]
@@ -117,26 +119,26 @@ impl Neuron {
                             .copied()
                             .unwrap_or(crate::ACTION_POTENTIAL_THRESHOLD);
                         // update own state with the incoming signal
-                        update_neuron(&mut state, Some(weight));
-
-                        // check if we are firing
-                        if state.firing {
-                            // schedule action potentials for all axonal connections
-                            for i in 0..axon_handles.len() {
-                                let ap = ActionPotential {
-                                    arrival: Instant::now() + axon_durations[i],
-                                    target_idx: i,
-                                };
-                                state.pending_action_potentials.push(Reverse(ap));
+                        if update_neuron(&mut state, Some(weight)) {
+                            // check if we are firing
+                            if state.firing {
+                                // schedule action potentials for all axonal connections
+                                for i in 0..axon_handles.len() {
+                                    let ap = ActionPotential {
+                                        arrival: Instant::now() + axon_durations[i],
+                                        target_idx: i,
+                                    };
+                                    state.pending_action_potentials.push(Reverse(ap));
+                                }
                             }
-                        }
 
-                        // update system about the current state
-                        match system_handle.send(state.clone()) {
-                            Ok(_) => {}
-                            Err(_) => {
-                                println!("System not reachable from neuron {}", state.idx);
-                                break;
+                            // update system about the current state
+                            match system_handle.send(state.clone()) {
+                                Ok(_) => {}
+                                Err(_) => {
+                                    println!("System not reachable from neuron {}", state.idx);
+                                    break;
+                                }
                             }
                         }
                     }

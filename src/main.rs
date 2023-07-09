@@ -11,19 +11,19 @@ mod utils;
 // Spiking Network Configuration //
 ///////////////////////////////////
 const NUM_NEURONS: usize = 600;
-const NUM_CONNECTIONS: usize = 10;
+const NUM_CONNECTIONS: usize = 3;
 
 const ACTION_POTENTIAL_THRESHOLD: f32 = 1.0;
-const ACTION_POTENTIAL_SPEED: f32 = 0.01;
-const MEMBRANE_DECAY_RATE: f32 = 0.2;
+const ACTION_POTENTIAL_SPEED: f32 = 0.25;
+const MEMBRANE_DECAY_RATE: f32 = 0.1;
 
 const REFRACTORY_POTENTIAL: f32 = -0.5;
 const HARD_REFRACTORY_DURATION: Duration = Duration::from_millis(500);
 const REFRACTORY_DECAY_RATE: f32 = 0.15;
 
-const MAX_CONNECTION_DISTANCE: f32 = 0.2;
-const MIN_WEIGHT_INIT: f32 = -0.3;
-const MAX_WEIGHT_INIT: f32 = 0.5;
+const MAX_CONNECTION_DISTANCE: f32 = 0.1;
+const MIN_WEIGHT_INIT: f32 = 0.5;
+const MAX_WEIGHT_INIT: f32 = 1.1;
 const INIT_CONNECTION_RETRIES: usize = 50;
 
 ////////////////////////////
