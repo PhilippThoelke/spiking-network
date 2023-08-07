@@ -11,28 +11,36 @@ mod utils;
 ///////////////////////////////////
 // Spiking Network Configuration //
 ///////////////////////////////////
-const NUM_NEURONS: usize = 1000;
-const NUM_CONNECTIONS: usize = 6;
+const NUM_NEURONS: usize = 800;
+const NUM_CONNECTIONS: usize = 4;
 
 const ACTION_POTENTIAL_THRESHOLD: f32 = 1.0;
 const ACTION_POTENTIAL_SPEED: f32 = 0.25;
 const MEMBRANE_DECAY_RATE: f32 = 0.3;
 
-const REFRACTORY_POTENTIAL: f32 = -0.9;
-const HARD_REFRACTORY_DURATION: Duration = Duration::from_millis(300);
-const REFRACTORY_DECAY_RATE: f32 = 0.2;
+const REFRACTORY_POTENTIAL: f32 = -0.7;
+const HARD_REFRACTORY_DURATION: Duration = Duration::from_millis(250);
+const REFRACTORY_DECAY_RATE: f32 = 0.5;
 
 const MAX_CONNECTION_DISTANCE: f32 = 0.1;
 const MIN_WEIGHT_INIT: f32 = -0.3;
 const MAX_WEIGHT_INIT: f32 = 1.2;
 const INIT_CONNECTION_RETRIES: usize = 50;
 
+////////////////////
+// Self-balancing //
+////////////////////
+const SELF_BALANCE: bool = true;
+const MIN_ACTIVE: usize = 50;
+const MAX_ACTIVE: usize = 200;
+
 ////////////////////////////
 // Visualization Settings //
 ////////////////////////////
 const WINDOW_SIZE: (u32, u32) = (1200, 800);
 const ASPECT_RATIO: f32 = (WINDOW_SIZE.0 as f32) / (WINDOW_SIZE.1 as f32);
-const NEURON_RADIUS: f32 = 10.0;
+const NEURON_RADIUS: f32 = 15.0;
+const DRAW_EVERYTHING: bool = true;
 
 struct Model {
     net: Network,
@@ -109,9 +117,13 @@ fn update(_app: &App, model: &mut Model, _update: Update) {
     });
 
     // update neuron states
+    let mut n_firing = 0;
     for state in model.neuron_states.iter_mut() {
         if let Some(state) = state {
             neuron::update_neuron(state, None);
+            if state.firing {
+                n_firing += 1;
+            }
         }
     }
 
@@ -129,6 +141,17 @@ fn update(_app: &App, model: &mut Model, _update: Update) {
             .add(egui::Slider::new(&mut model.std, 0.0..=2.0).text("Std"))
             .changed();
     });
+
+    // update network parameters
+    if SELF_BALANCE {
+        if n_firing > MAX_ACTIVE {
+            model.mean -= 0.005;
+            changed = true;
+        } else if n_firing < MIN_ACTIVE {
+            model.mean += 0.005;
+            changed = true;
+        }
+    }
 
     if changed {
         for neuron in model.net.neurons.iter_mut() {
@@ -149,14 +172,16 @@ fn view(app: &App, model: &Model, frame: Frame) {
     // draw neurons and connections
     for (pos, neuron) in model.net.positions.iter().zip(model.net.neurons.iter()) {
         // draw connections
-        let from = model.net.positions[neuron.idx];
-        for target_idx in neuron.dendrite_idxs.as_ref().unwrap().iter() {
-            let to = model.net.positions[*target_idx];
-            draw.line()
-                .start(to_screen_coords(vec2(from.0, from.1), win))
-                .end(to_screen_coords(vec2(to.0, to.1), win))
-                .weight(1.0)
-                .color(BLACK);
+        if DRAW_EVERYTHING {
+            let from = model.net.positions[neuron.idx];
+            for target_idx in neuron.dendrite_idxs.as_ref().unwrap().iter() {
+                let to = model.net.positions[*target_idx];
+                draw.line()
+                    .start(to_screen_coords(vec2(from.0, from.1), win))
+                    .end(to_screen_coords(vec2(to.0, to.1), win))
+                    .weight(1.0)
+                    .color(BLACK);
+            }
         }
 
         // get neuron color
@@ -164,14 +189,19 @@ fn view(app: &App, model: &Model, frame: Frame) {
             if state.firing {
                 RED
             } else {
+                if !DRAW_EVERYTHING && state.membrane_potential == 0.0 {
+                    continue;
+                }
                 Rgb::new(
                     0,
                     (state.membrane_potential.max(0.0) / ACTION_POTENTIAL_THRESHOLD * 255.0) as u8,
                     (state.membrane_potential.min(0.0) / ACTION_POTENTIAL_THRESHOLD * -255.0) as u8,
                 )
             }
-        } else {
+        } else if DRAW_EVERYTHING {
             BLACK
+        } else {
+            continue;
         };
 
         // draw neuron
