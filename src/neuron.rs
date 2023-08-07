@@ -64,15 +64,21 @@ pub struct Neuron {
     pub dendrite_idxs: Option<Vec<usize>>,
     pub dendrite: Option<mpsc::Sender<usize>>,
     pub thread: Option<thread::JoinHandle<()>>,
+    pub modifier_sender: mpsc::Sender<(f32, f32)>,
+    modifier_receiver: Option<mpsc::Receiver<(f32, f32)>>,
 }
 
 impl Neuron {
     pub fn new(idx: usize) -> Neuron {
+        let (modifier_sender, modifier_receiver) = mpsc::channel();
+
         Neuron {
             idx,
             dendrite_idxs: None,
             dendrite: None,
             thread: None,
+            modifier_sender,
+            modifier_receiver: Some(modifier_receiver),
         }
     }
 
@@ -87,16 +93,20 @@ impl Neuron {
         self.dendrite = Some(dendrite_handles.0.clone());
         self.dendrite_idxs = Some(dendrite_weights.keys().copied().collect());
 
+        let modifier_receiver = self.modifier_receiver.take().unwrap();
         let idx = self.idx;
         self.thread = Some(thread::spawn(move || {
             // initialize neuron state
             let mut state = NeuronState {
-                idx: idx,
+                idx,
                 firing: false,
                 membrane_potential: 0.0,
                 last_update: Instant::now() - crate::HARD_REFRACTORY_DURATION,
                 pending_action_potentials: BinaryHeap::new(),
             };
+
+            let mut mean: f32 = 0.0;
+            let mut std: f32 = 1.0;
 
             loop {
                 // wait until we receive an action potential or a pending one arrives
@@ -113,11 +123,19 @@ impl Neuron {
                         // we received an action potential (other -> self) //
                         /////////////////////////////////////////////////////
 
+                        // get potential modifier signals from the system
+                        while let Ok((m, s)) = modifier_receiver.try_recv() {
+                            mean = m;
+                            std = s;
+                        }
+
                         // get the weight of the incoming signal, simply fire if no weight is set
-                        let weight = dendrite_weights
+                        let mut weight = dendrite_weights
                             .get(&target_idx)
                             .copied()
                             .unwrap_or(crate::ACTION_POTENTIAL_THRESHOLD);
+                        weight = (weight + mean) * std;
+
                         // update own state with the incoming signal
                         if update_neuron(&mut state, Some(weight)) {
                             // check if we are firing

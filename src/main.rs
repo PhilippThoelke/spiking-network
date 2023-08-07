@@ -1,4 +1,5 @@
 use nannou::prelude::*;
+use nannou_egui::{self, egui, Egui};
 use network::Network;
 use std::time::Duration;
 use utils::to_screen_coords;
@@ -10,20 +11,20 @@ mod utils;
 ///////////////////////////////////
 // Spiking Network Configuration //
 ///////////////////////////////////
-const NUM_NEURONS: usize = 600;
-const NUM_CONNECTIONS: usize = 3;
+const NUM_NEURONS: usize = 1000;
+const NUM_CONNECTIONS: usize = 6;
 
 const ACTION_POTENTIAL_THRESHOLD: f32 = 1.0;
 const ACTION_POTENTIAL_SPEED: f32 = 0.25;
-const MEMBRANE_DECAY_RATE: f32 = 0.1;
+const MEMBRANE_DECAY_RATE: f32 = 0.3;
 
-const REFRACTORY_POTENTIAL: f32 = -0.5;
-const HARD_REFRACTORY_DURATION: Duration = Duration::from_millis(500);
-const REFRACTORY_DECAY_RATE: f32 = 0.15;
+const REFRACTORY_POTENTIAL: f32 = -0.9;
+const HARD_REFRACTORY_DURATION: Duration = Duration::from_millis(300);
+const REFRACTORY_DECAY_RATE: f32 = 0.2;
 
 const MAX_CONNECTION_DISTANCE: f32 = 0.1;
-const MIN_WEIGHT_INIT: f32 = 0.5;
-const MAX_WEIGHT_INIT: f32 = 1.1;
+const MIN_WEIGHT_INIT: f32 = -0.3;
+const MAX_WEIGHT_INIT: f32 = 1.2;
 const INIT_CONNECTION_RETRIES: usize = 50;
 
 ////////////////////////////
@@ -31,11 +32,14 @@ const INIT_CONNECTION_RETRIES: usize = 50;
 ////////////////////////////
 const WINDOW_SIZE: (u32, u32) = (1200, 800);
 const ASPECT_RATIO: f32 = (WINDOW_SIZE.0 as f32) / (WINDOW_SIZE.1 as f32);
-const NEURON_RADIUS: f32 = 8.0;
+const NEURON_RADIUS: f32 = 10.0;
 
 struct Model {
     net: Network,
     neuron_states: Vec<Option<neuron::NeuronState>>,
+    egui: Egui,
+    mean: f32,
+    std: f32,
 }
 
 fn model(app: &App) -> Model {
@@ -44,9 +48,14 @@ fn model(app: &App) -> Model {
         .new_window()
         .size(WINDOW_SIZE.0, WINDOW_SIZE.1)
         .view(view)
+        .raw_event(raw_window_event)
         .build()
         .unwrap();
-    app.window(win_id).unwrap().set_resizable(false);
+    let window = app.window(win_id).unwrap();
+    window.set_resizable(false);
+
+    // initialize egui
+    let egui = Egui::from_window(&window);
 
     // initialize network
     let net = Network::new(ASPECT_RATIO);
@@ -54,6 +63,9 @@ fn model(app: &App) -> Model {
     Model {
         net,
         neuron_states: vec![None; NUM_NEURONS],
+        egui,
+        mean: 0.0,
+        std: 1.0,
     }
 }
 
@@ -102,6 +114,30 @@ fn update(_app: &App, model: &mut Model, _update: Update) {
             neuron::update_neuron(state, None);
         }
     }
+
+    // update egui
+    let egui = &mut model.egui;
+    egui.set_elapsed_time(_update.since_start);
+    let ctx = egui.begin_frame();
+
+    let mut changed = false;
+    egui::Window::new("Settings").show(&ctx, |ui| {
+        changed |= ui
+            .add(egui::Slider::new(&mut model.mean, -1.0..=1.0).text("Mean"))
+            .changed();
+        changed |= ui
+            .add(egui::Slider::new(&mut model.std, 0.0..=2.0).text("Std"))
+            .changed();
+    });
+
+    if changed {
+        for neuron in model.net.neurons.iter_mut() {
+            neuron
+                .modifier_sender
+                .send((model.mean, model.std))
+                .unwrap();
+        }
+    }
 }
 
 fn view(app: &App, model: &Model, frame: Frame) {
@@ -146,6 +182,12 @@ fn view(app: &App, model: &Model, frame: Frame) {
     }
 
     draw.to_frame(app, &frame).unwrap();
+    model.egui.draw_to_frame(&frame).unwrap();
+}
+
+fn raw_window_event(_app: &App, model: &mut Model, event: &nannou::winit::event::WindowEvent) {
+    // let egui handle things like keyboard and mouse input
+    model.egui.handle_raw_event(event);
 }
 
 fn main() {
